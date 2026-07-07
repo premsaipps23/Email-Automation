@@ -223,7 +223,7 @@ export class TemplateService {
         subject: 'Happy Work Anniversary {NAME}!',
         htmlContent: '<p>Congratulations on another successful year with the team! We appreciate your hard work.</p>',
         greetingTemplate: this.anniversaryGreetingTemplate,
-        imageConfig: { coordinateMode: 'template', shape: 'circle', x: 370, y: 277, width: 500, height: 500, borderInset: 6 },
+        imageConfig: { coordinateMode: 'template', shape: 'circle', x: 355, y: 262, width: 530, height: 530, borderInset: 6 },
         nameConfig: {
           coordinateMode: 'template',
           x: 620,
@@ -243,20 +243,20 @@ export class TemplateService {
 
     return {
       subject: 'Happy Birthday {NAME}!',
-      htmlContent: '<p>Wishing you a fantastic day filled with joy and celebration! Happy Birthday!</p>',
-      greetingTemplate: this.birthdayGreetingTemplate,
-      imageConfig: { coordinateMode: 'template', x: 91, y: 126, width: 142, height: 142 },
+      htmlContent: '<p>Wishing you a year filled with joy, laughter, and wonderful memories. Thank you for being such a valuable part of our team!</p>',
+      greetingTemplate: 'Happy Birthday',
+      imageConfig: { coordinateMode: 'template', shape: 'circle', x: 355, y: 262, width: 530, height: 530, borderInset: 6 },
       nameConfig: {
         coordinateMode: 'template',
-        x: 162,
-        y: 337,
-        fontSize: 17,
-        color: '#ff6f00',
-        bgColor: '#ffffff',
-        bgWidth: 190,
-        bgHeight: 28,
+        x: 620,
+        y: 935,
+        fontSize: 50,
+        color: '#ff7a00',
+        bgColor: 'transparent',
+        bgWidth: 850,
+        bgHeight: 70,
       },
-      greetingConfig: { coordinateMode: 'template', x: 162, y: 0, fontSize: 0, color: 'transparent' },
+      greetingConfig: { coordinateMode: 'template', x: 620, y: 870, fontSize: 40, color: '#0f172a', bgColor: 'transparent' },
       imageUrl: selectedImage,
     };
   }

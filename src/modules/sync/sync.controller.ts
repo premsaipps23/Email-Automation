@@ -181,14 +181,16 @@ export class SyncController {
     return result;
   }
 
-  private async resolveOneDriveFolderId(accessToken: string) {
+  private async resolveOneDriveFolderId(accessToken: string, forceRefresh = false) {
     if (!accessToken) {
       return null;
     }
 
-    const storedFolderId = await this.safeGetSetting('SYNC_ONEDRIVE_FOLDER_ID');
-    if (storedFolderId) {
-      return storedFolderId;
+    if (!forceRefresh) {
+      const storedFolderId = await this.safeGetSetting('SYNC_ONEDRIVE_FOLDER_ID');
+      if (storedFolderId) {
+        return storedFolderId;
+      }
     }
 
     const configuredFolderName = (await this.safeGetSetting('SYNC_ONEDRIVE_FOLDER_NAME')) || this.hrFolderName;
@@ -528,11 +530,26 @@ export class SyncController {
         return res.status(400).json({ success: false, message: `Could not resolve the "${this.hrFolderName}" folder in OneDrive.` });
       }
 
-      const folderItems = await this.walkFolderTree(remoteFolderId, accessToken);
-      const excelItems = folderItems.filter((item: any) => this.isExcelFile(item?.name));
-      const selectedExcel = remoteItemId
-        ? folderItems.find((item: any) => item.id === remoteItemId)
-        : excelItems[0];
+      let currentFolderId = remoteFolderId;
+      let folderItems = await this.walkFolderTree(currentFolderId, accessToken);
+      let excelItems = folderItems.filter((item: any) => this.isExcelFile(item?.name));
+
+      if (excelItems.length === 0) {
+        const freshFolderId = await this.resolveOneDriveFolderId(accessToken, true);
+        if (freshFolderId && freshFolderId !== currentFolderId) {
+          currentFolderId = freshFolderId;
+          folderItems = await this.walkFolderTree(currentFolderId, accessToken);
+          excelItems = folderItems.filter((item: any) => this.isExcelFile(item?.name));
+        }
+      }
+
+      let selectedExcel = remoteItemId
+        ? folderItems.find((item: any) => item.id === remoteItemId && this.isExcelFile(item?.name))
+        : null;
+
+      if (!selectedExcel) {
+        selectedExcel = excelItems[0];
+      }
 
       if (!selectedExcel) {
         return res.status(400).json({ success: false, message: `No Excel file found inside the "${this.hrFolderName}" folder.` });
@@ -542,8 +559,8 @@ export class SyncController {
       if (selectedExcel?.id) {
         await this.safeSaveSetting('SYNC_ONEDRIVE_ITEM_ID', selectedExcel.id);
       }
-      if (remoteFolderId) {
-        await this.safeSaveSetting('SYNC_ONEDRIVE_FOLDER_ID', remoteFolderId);
+      if (currentFolderId) {
+        await this.safeSaveSetting('SYNC_ONEDRIVE_FOLDER_ID', currentFolderId);
       }
 
             // Determine local target path

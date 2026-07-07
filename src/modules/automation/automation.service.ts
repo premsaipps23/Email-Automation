@@ -180,18 +180,23 @@ export class AutomationService implements OnModuleInit {
               greetingText = greetingText.replace(new RegExp(`\\{${key}\\}`, 'g'), val || '');
             });
 
+            const bodyMessage = template
+              ? this.templateService.renderTemplate(template, gVars)
+              : '';
+
             // Generate the card directly from the OneDrive template file.
             const composedBuffer = await this.openRouterService.generateGreetingCard(
               templatePath,
               photoPath,
-              event.type === 'anniversary' ? `${event.name}”` : event.name,
-              event.type === 'anniversary' ? `“${greetingText}` : greetingText,
+              event.name,
+              greetingText,
               template.imageConfig,
               template.nameConfig,
               template.nameCoverConfig,
               template.greetingConfig,
               template.badgeConfig,
-              event.type === 'anniversary' ? String(event.years || '').padStart(2, '0') : undefined
+              event.type === 'anniversary' ? String(event.years || '').padStart(2, '0') : undefined,
+              bodyMessage
             );
 
             attachments.push({
@@ -285,9 +290,43 @@ export class AutomationService implements OnModuleInit {
         return { success: false, message: 'Template or photo file not found in OneDrive directory' };
       }
 
-      const greetingText = selectedTemplate?.type === 'anniversary'
+      let yearsText = '02';
+      let ageText = '25';
+      try {
+        const employees = await this.employeeService.findAll();
+        const emp = employees.find(e => this.normalizeName(e.name) === this.normalizeName(personName));
+        if (emp) {
+          if (emp.doj) {
+            const doj = new Date(emp.doj);
+            if (!isNaN(doj.getTime())) {
+              yearsText = String(new Date().getFullYear() - doj.getFullYear()).padStart(2, '0');
+            }
+          }
+          if (emp.dob) {
+            const dob = new Date(emp.dob);
+            if (!isNaN(dob.getTime())) {
+              ageText = String(new Date().getFullYear() - dob.getFullYear());
+            }
+          }
+        }
+      } catch (e) { }
+
+      let greetingText = selectedTemplate?.greetingTemplate || (selectedTemplate?.type === 'anniversary'
         ? this.anniversaryGreetingTemplate
-        : this.birthdayGreetingTemplate;
+        : this.birthdayGreetingTemplate);
+
+      const yearsInt = parseInt(yearsText) || 2;
+      const ageInt = parseInt(ageText) || 25;
+
+      const gVars = {
+        AGE: ageText,
+        YEARS: yearsText,
+        ORDINAL: getOrdinal(selectedTemplate?.type === 'anniversary' ? yearsInt : ageInt)
+      };
+
+      Object.entries(gVars).forEach(([key, val]) => {
+        greetingText = greetingText.replace(new RegExp(`\\{${key}\\}`, 'g'), val || '');
+      });
 
       const imageConfig = photoPlaceholder ? {
         x: photoPlaceholder.x,
@@ -304,29 +343,22 @@ export class AutomationService implements OnModuleInit {
         height: nameField.height
       } : undefined;
 
-      let yearsText = '02';
-      try {
-        const employees = await this.employeeService.findAll();
-        const emp = employees.find(e => this.normalizeName(e.name) === this.normalizeName(personName));
-        if (emp && emp.doj) {
-          const doj = new Date(emp.doj);
-          if (!isNaN(doj.getTime())) {
-            yearsText = String(new Date().getFullYear() - doj.getFullYear()).padStart(2, '0');
-          }
-        }
-      } catch (e) { }
+      const bodyMessage = selectedTemplate
+        ? this.templateService.renderTemplate(selectedTemplate, gVars)
+        : '';
 
       const buffer = await this.openRouterService.generateGreetingCard(
         templatePath,
         photoPath,
-        selectedTemplate?.type === 'anniversary' ? `${personName}”` : personName,
-        selectedTemplate?.type === 'anniversary' ? `“${greetingText}` : greetingText,
+        personName,
+        greetingText,
         imageConfig,
         nameConfig,
         selectedTemplate?.nameCoverConfig,
         undefined,
         selectedTemplate?.badgeConfig,
-        selectedTemplate?.type === 'anniversary' ? yearsText : undefined
+        selectedTemplate?.type === 'anniversary' ? yearsText : undefined,
+        bodyMessage
       );
 
       // Generated card images are archived in generated templates.
@@ -482,21 +514,39 @@ export class AutomationService implements OnModuleInit {
         return { success: false, message: `No profile photo found in OneDrive profiles folder.` };
       }
 
-      const greetingText = template?.type === 'anniversary'
+      let greetingText = template?.greetingTemplate || (template?.type === 'anniversary'
         ? this.anniversaryGreetingTemplate
-        : this.birthdayGreetingTemplate;
+        : this.birthdayGreetingTemplate);
+
+      const yearsInt = parseInt(String((previewPerson as any).years)) || 2;
+      const ageInt = parseInt(String((previewPerson as any).age)) || 25;
+
+      const gVars = {
+        AGE: String(ageInt),
+        YEARS: String(yearsInt).padStart(2, '0'),
+        ORDINAL: getOrdinal(template?.type === 'anniversary' ? yearsInt : ageInt)
+      };
+
+      Object.entries(gVars).forEach(([key, val]) => {
+        greetingText = greetingText.replace(new RegExp(`\\{${key}\\}`, 'g'), val || '');
+      });
+
+      const bodyMessage = template
+        ? this.templateService.renderTemplate(template, gVars)
+        : '';
 
       const buffer = await this.openRouterService.generateGreetingCard(
         templatePath,
         photoPath,
-        template?.type === 'anniversary' ? `${previewPerson.name}”` : previewPerson.name,
-        template?.type === 'anniversary' ? `“${greetingText}` : greetingText,
+        previewPerson.name,
+        greetingText,
         template?.imageConfig,
         template?.nameConfig,
         template?.nameCoverConfig,
         template?.greetingConfig,
         template?.badgeConfig,
-        template?.type === 'anniversary' ? String((previewPerson as any).years || '02').padStart(2, '0') : undefined,
+        template?.type === 'anniversary' ? String(yearsInt).padStart(2, '0') : undefined,
+        bodyMessage
       );
 
       return {
@@ -541,18 +591,23 @@ export class AutomationService implements OnModuleInit {
           greetingText = greetingText.replace(new RegExp(`\\{${key}\\}`, 'g'), val || '');
         });
 
+        const bodyMessage = template
+          ? this.templateService.renderTemplate(template, gVars)
+          : '';
+
         const photoPath = event.photoUrl ? path.join(storageDir, event.photoUrl) : '';
         const buffer = await this.openRouterService.generateGreetingCard(
           templatePath,
           fs.existsSync(photoPath) ? photoPath : '',
-          event.type === 'anniversary' ? `${event.name}”` : event.name,
-          event.type === 'anniversary' ? `“${greetingText}` : greetingText,
+          event.name,
+          greetingText,
           template.imageConfig,
           template.nameConfig,
           template.nameCoverConfig,
           template.greetingConfig,
           template.badgeConfig,
           event.type === 'anniversary' ? String(event.years || '').padStart(2, '0') : undefined,
+          bodyMessage
         );
 
         previews.push({
@@ -583,14 +638,23 @@ export class AutomationService implements OnModuleInit {
       const requested = path.join(storageDir, photoFile);
       if (fs.existsSync(requested)) {
         let years = 2; // Default fallback
+        let age = 25;
         try {
           const nameToFind = personName || path.parse(photoFile).name;
           const employees = await this.employeeService.findAll();
           const emp = employees.find(e => this.normalizeName(e.name) === this.normalizeName(nameToFind));
-          if (emp && emp.doj) {
-            const doj = new Date(emp.doj);
-            if (!isNaN(doj.getTime())) {
-              years = new Date().getFullYear() - doj.getFullYear();
+          if (emp) {
+            if (emp.doj) {
+              const doj = new Date(emp.doj);
+              if (!isNaN(doj.getTime())) {
+                years = new Date().getFullYear() - doj.getFullYear();
+              }
+            }
+            if (emp.dob) {
+              const dob = new Date(emp.dob);
+              if (!isNaN(dob.getTime())) {
+                age = new Date().getFullYear() - dob.getFullYear();
+              }
             }
           }
         } catch (e) { }
@@ -600,6 +664,7 @@ export class AutomationService implements OnModuleInit {
           photoFile,
           photoPath: requested,
           years,
+          age,
         };
       }
     }
@@ -612,6 +677,7 @@ export class AutomationService implements OnModuleInit {
         photoFile: eventWithPhoto.photoUrl,
         photoPath: path.join(storageDir, eventWithPhoto.photoUrl),
         years: eventWithPhoto.years || 2,
+        age: eventWithPhoto.age || 25,
       };
     }
 
@@ -627,15 +693,24 @@ export class AutomationService implements OnModuleInit {
       : '';
 
     let years = 2;
+    let age = 25;
     if (firstProfile) {
       try {
         const empName = path.parse(firstProfile).name;
         const employees = await this.employeeService.findAll();
         const emp = employees.find(e => this.normalizeName(e.name) === this.normalizeName(empName));
-        if (emp && emp.doj) {
-          const doj = new Date(emp.doj);
-          if (!isNaN(doj.getTime())) {
-            years = new Date().getFullYear() - doj.getFullYear();
+        if (emp) {
+          if (emp.doj) {
+            const doj = new Date(emp.doj);
+            if (!isNaN(doj.getTime())) {
+              years = new Date().getFullYear() - doj.getFullYear();
+            }
+          }
+          if (emp.dob) {
+            const dob = new Date(emp.dob);
+            if (!isNaN(dob.getTime())) {
+              age = new Date().getFullYear() - dob.getFullYear();
+            }
           }
         }
       } catch (e) { }
@@ -646,6 +721,7 @@ export class AutomationService implements OnModuleInit {
       photoFile: firstProfile ? path.join('profiles', firstProfile) : '',
       photoPath: firstProfile ? path.join(profilesDir, firstProfile) : '',
       years,
+      age,
     };
   }
 
