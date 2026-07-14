@@ -43,7 +43,22 @@ export class MsIntegrationController {
   async callback(@Query('code') code: string, @Query('state') state: string, @Res() res: Response) {
     try {
       if (!code) return res.status(400).send('Missing code');
-      const userEmail = state;
+
+      // Decode state: supports both new base64 JSON format and legacy plain email format
+      let userEmail = state;
+      let frontendUrl = '';
+      let callbackRedirectUri = process.env.MICROSOFT_REDIRECT_URI || process.env.MS_GRAPH_REDIRECT_URI || '';
+      try {
+        const decoded = JSON.parse(Buffer.from(state, 'base64').toString('utf8'));
+        if (decoded && typeof decoded === 'object') {
+          userEmail = decoded.email || '';
+          frontendUrl = decoded.frontendUrl || '';
+          callbackRedirectUri = decoded.redirectUri || callbackRedirectUri;
+        }
+      } catch {
+        // Legacy: state is just the plain email string
+        userEmail = state;
+      }
 
       if (userEmail) {
         await this.settingsRepo.save({ key: 'LAST_CONNECTED_USER_EMAIL', value: userEmail });
@@ -51,10 +66,9 @@ export class MsIntegrationController {
 
       const clientId = process.env.MS_CLIENT_ID || process.env.MS_GRAPH_CLIENT_ID;
       const clientSecret = process.env.MS_CLIENT_SECRET || process.env.MS_GRAPH_CLIENT_SECRET;
-      const redirectUri = process.env.MICROSOFT_REDIRECT_URI || process.env.MS_GRAPH_REDIRECT_URI;
       const tenant = process.env.MS_TENANT_ID || process.env.MS_GRAPH_TENANT_ID || process.env.MS_TENANT || 'common';
 
-      if (!clientId || !clientSecret || !redirectUri) {
+      if (!clientId || !clientSecret || !callbackRedirectUri) {
         return res.status(500).send('Microsoft client configuration missing on server.');
       }
 
@@ -62,7 +76,7 @@ export class MsIntegrationController {
       params.append('client_id', clientId);
       params.append('scope', 'offline_access Files.ReadWrite User.Read');
       params.append('code', code);
-      params.append('redirect_uri', redirectUri);
+      params.append('redirect_uri', callbackRedirectUri);
       params.append('grant_type', 'authorization_code');
       params.append('client_secret', clientSecret);
 
@@ -76,8 +90,8 @@ export class MsIntegrationController {
         await this.safeSaveSetting('MS_GRAPH_TOKEN_EXPIRES_AT', expiresAt, userEmail);
       }
 
-      // Redirect back to frontend dev server with a success flag
-      return res.redirect('http://localhost:5173/?ms_connected=1');
+      // Redirect back to the frontend using the URL decoded from state
+      return res.redirect(`${frontendUrl}/?ms_connected=1`);
     } catch (err) {
       console.error('MS integration callback error', err?.message || err);
       return res.status(500).send('Failed to complete Microsoft OAuth: ' + (err?.message || err));
