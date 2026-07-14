@@ -466,7 +466,7 @@ export class SyncController {
   // Returns an authorization URL the user can visit to consent
   @Get('onedrive/start')
   @UseGuards(ClerkAuthGuard)
-  async getOneDriveAuthUrl(@Req() req: any, @Query('redirectUri') redirectUri?: string, @Res() res?: Response) {
+  async getOneDriveAuthUrl(@Req() req: any, @Query('redirectUri') redirectUri?: string, @Query('frontendUrl') frontendUrl?: string, @Res() res?: Response) {
     try {
       // support multiple env names for compatibility
       const clientId = process.env.MS_GRAPH_CLIENT_ID || process.env.MS_CLIENT_ID;
@@ -475,13 +475,18 @@ export class SyncController {
         return res ? res.status(400).json({ success: false, message: 'MS_GRAPH_CLIENT_ID or MS_GRAPH_REDIRECT_URI not configured.' }) : { success: false };
       }
       const tenant = process.env.MS_TENANT_ID || process.env.MS_GRAPH_TENANT_ID || process.env.MS_TENANT || 'common';
+      // Encode both email and frontendUrl in state so callback can use both
+      const stateData = JSON.stringify({
+        email: req.user?.email || '',
+        frontendUrl: frontendUrl || '',
+      });
       const params = new URLSearchParams({
         client_id: clientId,
         response_type: 'code',
         redirect_uri: redirect,
         response_mode: 'query',
         scope: 'offline_access Files.ReadWrite User.Read',
-        state: req.user?.email || '',
+        state: Buffer.from(stateData).toString('base64'),
       });
       const url = `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/authorize?${params.toString()}`;
       return res ? res.json({ success: true, url }) : { success: true, url };
@@ -700,7 +705,20 @@ export class SyncController {
   async oneDriveCallback(@Query('code') code: string, @Query('state') state: string, @Res() res: Response) {
     try {
       if (!code) return res.status(400).send('Missing code');
-      const userEmail = state;
+
+      // Decode state: supports both new base64 JSON format and legacy plain email format
+      let userEmail = state;
+      let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+      try {
+        const decoded = JSON.parse(Buffer.from(state, 'base64').toString('utf8'));
+        if (decoded && typeof decoded === 'object') {
+          userEmail = decoded.email || '';
+          frontendUrl = decoded.frontendUrl || frontendUrl;
+        }
+      } catch {
+        // Legacy: state is just the plain email string, frontendUrl stays as env default
+        userEmail = state;
+      }
 
       if (userEmail) {
         await this.settingsRepo.save({ key: 'LAST_CONNECTED_USER_EMAIL', value: userEmail });
@@ -736,8 +754,7 @@ export class SyncController {
         await this.safeSaveSetting('MS_GRAPH_TOKEN_EXPIRES_AT', expiresAt, userEmail);
       }
 
-      // Redirect back to the frontend with a success flag
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+      // Redirect back to the frontend using the URL decoded from state
       return res.redirect(`${frontendUrl}/?ms_connected=1`);
     } catch (err) {
       const e = err as any;
