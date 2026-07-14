@@ -736,8 +736,9 @@ export class SyncController {
         await this.safeSaveSetting('MS_GRAPH_TOKEN_EXPIRES_AT', expiresAt, userEmail);
       }
 
-      // Redirect back to frontend dev server with a success flag
-      return res.redirect('http://localhost:5173/?ms_connected=1');
+      // Redirect back to the frontend with a success flag
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+      return res.redirect(`${frontendUrl}/?ms_connected=1`);
     } catch (err) {
       const e = err as any;
       console.error('OneDrive callback error', e?.message || e);
