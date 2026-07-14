@@ -1,5 +1,5 @@
 
-import { Controller, Post, Res, Body, Get, Query, UseInterceptors, UploadedFile, UseGuards } from '@nestjs/common';
+import { Controller, Post, Res, Body, Get, Query, UseInterceptors, UploadedFile, UseGuards, Req } from '@nestjs/common';
 import { ClerkAuthGuard } from '../../common/guards/clerk-auth.guard';
 import { Response } from 'express';
 import axios from 'axios';
@@ -25,9 +25,15 @@ export class SyncController {
   // Safe setting helpers: try DB first, fallback to local JSON file when DB unavailable
   private settingsFilePath = path.join(process.cwd(), 'data', 'settings.json');
 
-  private async safeGetSetting(key: string): Promise<string | null> {
+  private async safeGetSetting(key: string, userEmail?: string): Promise<string | null> {
+    let email = userEmail;
+    if (!email) {
+      const lastConnected = await this.settingsRepo.findOneBy({ key: 'LAST_CONNECTED_USER_EMAIL' });
+      email = lastConnected?.value || undefined;
+    }
+    const finalKey = email ? `${email}:${key}` : key;
     try {
-      const s = await this.settingsRepo.findOneBy({ key });
+      const s = await this.settingsRepo.findOneBy({ key: finalKey });
       if (s) return s.value;
     } catch (err) {
       // fall through to file fallback
@@ -36,7 +42,7 @@ export class SyncController {
       if (fs.existsSync(this.settingsFilePath)) {
         const raw = fs.readFileSync(this.settingsFilePath, 'utf8');
         const obj = JSON.parse(raw || '{}');
-        return obj[key] || null;
+        return obj[finalKey] || null;
       }
     } catch (err) {
       // ignore
@@ -44,9 +50,15 @@ export class SyncController {
     return null;
   }
 
-  private async safeSaveSetting(key: string, value: string) {
+  private async safeSaveSetting(key: string, value: string, userEmail?: string) {
+    let email = userEmail;
+    if (!email) {
+      const lastConnected = await this.settingsRepo.findOneBy({ key: 'LAST_CONNECTED_USER_EMAIL' });
+      email = lastConnected?.value || undefined;
+    }
+    const finalKey = email ? `${email}:${key}` : key;
     try {
-      await this.settingsRepo.save({ key, value });
+      await this.settingsRepo.save({ key: finalKey, value });
       return;
     } catch (err) {
       // fallback to file
@@ -59,7 +71,7 @@ export class SyncController {
         const raw = fs.readFileSync(this.settingsFilePath, 'utf8');
         obj = raw ? JSON.parse(raw) : {};
       }
-      obj[key] = value;
+      obj[finalKey] = value;
       fs.writeFileSync(this.settingsFilePath, JSON.stringify(obj, null, 2));
     } catch (err) {
       // ignore
@@ -82,10 +94,16 @@ export class SyncController {
     return items;
   }
 
-  private async getFreshGraphAccessToken(): Promise<string | null> {
-    const accessTokenVal = await this.safeGetSetting('MS_GRAPH_ACCESS_TOKEN');
-    const refreshTokenVal = await this.safeGetSetting('MS_GRAPH_REFRESH_TOKEN');
-    const expiresAtVal = await this.safeGetSetting('MS_GRAPH_TOKEN_EXPIRES_AT');
+  private async getFreshGraphAccessToken(userEmail?: string): Promise<string | null> {
+    let email = userEmail;
+    if (!email) {
+      const lastConnected = await this.settingsRepo.findOneBy({ key: 'LAST_CONNECTED_USER_EMAIL' });
+      email = lastConnected?.value || undefined;
+    }
+
+    const accessTokenVal = await this.safeGetSetting('MS_GRAPH_ACCESS_TOKEN', email);
+    const refreshTokenVal = await this.safeGetSetting('MS_GRAPH_REFRESH_TOKEN', email);
+    const expiresAtVal = await this.safeGetSetting('MS_GRAPH_TOKEN_EXPIRES_AT', email);
 
     let accessToken = accessTokenVal || process.env.MS_GRAPH_ACCESS_TOKEN || null;
     const refreshToken = refreshTokenVal || process.env.MS_GRAPH_REFRESH_TOKEN || null;
@@ -102,7 +120,7 @@ export class SyncController {
 
     const clientId = process.env.MS_GRAPH_CLIENT_ID || process.env.MS_CLIENT_ID;
     const clientSecret = process.env.MS_GRAPH_CLIENT_SECRET || process.env.MS_CLIENT_SECRET;
-    const tenant = (await this.safeGetSetting('MS_TENANT_ID')) || process.env.MS_TENANT_ID || process.env.MS_GRAPH_TENANT_ID || process.env.MS_TENANT || 'common';
+    const tenant = (await this.safeGetSetting('MS_TENANT_ID', email)) || process.env.MS_TENANT_ID || process.env.MS_GRAPH_TENANT_ID || process.env.MS_TENANT || 'common';
 
     if (!clientId || !clientSecret) {
       return accessToken || null;
@@ -124,13 +142,13 @@ export class SyncController {
 
       if (data.access_token) {
         accessToken = data.access_token;
-        await this.safeSaveSetting('MS_GRAPH_ACCESS_TOKEN', data.access_token);
+        await this.safeSaveSetting('MS_GRAPH_ACCESS_TOKEN', data.access_token, email);
       }
       if (data.refresh_token) {
-        await this.safeSaveSetting('MS_GRAPH_REFRESH_TOKEN', data.refresh_token);
+        await this.safeSaveSetting('MS_GRAPH_REFRESH_TOKEN', data.refresh_token, email);
       }
       if (data.expires_in) {
-        await this.safeSaveSetting('MS_GRAPH_TOKEN_EXPIRES_AT', String(Date.now() + data.expires_in * 1000));
+        await this.safeSaveSetting('MS_GRAPH_TOKEN_EXPIRES_AT', String(Date.now() + data.expires_in * 1000), email);
       }
       return accessToken;
     } catch (err) {
@@ -181,30 +199,30 @@ export class SyncController {
     return result;
   }
 
-  private async resolveOneDriveFolderId(accessToken: string, forceRefresh = false) {
+  private async resolveOneDriveFolderId(accessToken: string, userEmail?: string, forceRefresh = false) {
     if (!accessToken) {
       return null;
     }
 
     if (!forceRefresh) {
-      const storedFolderId = await this.safeGetSetting('SYNC_ONEDRIVE_FOLDER_ID');
+      const storedFolderId = await this.safeGetSetting('SYNC_ONEDRIVE_FOLDER_ID', userEmail);
       if (storedFolderId) {
         return storedFolderId;
       }
     }
 
-    const configuredFolderName = (await this.safeGetSetting('SYNC_ONEDRIVE_FOLDER_NAME')) || this.hrFolderName;
+    const configuredFolderName = (await this.safeGetSetting('SYNC_ONEDRIVE_FOLDER_NAME', userEmail)) || this.hrFolderName;
     const searchUrl = `https://graph.microsoft.com/v1.0/me/drive/root/search(q='${encodeURIComponent(configuredFolderName)}')?$select=id,name,folder,parentReference,webUrl`;
     const searchItems = await this.getGraphItems(searchUrl, accessToken);
     const exactMatch = searchItems.find(item => item?.folder && this.normalizeName(item.name) === this.normalizeName(configuredFolderName));
     if (exactMatch?.id) {
-      await this.safeSaveSetting('SYNC_ONEDRIVE_FOLDER_ID', exactMatch.id);
+      await this.safeSaveSetting('SYNC_ONEDRIVE_FOLDER_ID', exactMatch.id, userEmail);
       return exactMatch.id;
     }
 
     const fallback = searchItems.find(item => item?.folder) || null;
     if (fallback?.id) {
-      await this.safeSaveSetting('SYNC_ONEDRIVE_FOLDER_ID', fallback.id);
+      await this.safeSaveSetting('SYNC_ONEDRIVE_FOLDER_ID', fallback.id, userEmail);
       return fallback.id;
     }
 
@@ -215,7 +233,7 @@ export class SyncController {
       );
       const rootFolder = rootChildren.find(item => item?.folder && this.normalizeName(item.name) === this.normalizeName(configuredFolderName));
       if (rootFolder?.id) {
-        await this.safeSaveSetting('SYNC_ONEDRIVE_FOLDER_ID', rootFolder.id);
+        await this.safeSaveSetting('SYNC_ONEDRIVE_FOLDER_ID', rootFolder.id, userEmail);
         return rootFolder.id;
       }
     } catch (err) {
@@ -309,7 +327,7 @@ export class SyncController {
     }
   }
 
-  private async persistSyncWorkbook(buffer: Buffer, fileName: string) {
+  private async persistSyncWorkbook(buffer: Buffer, fileName: string, userEmail?: string) {
     const storageDir = process.env.STORAGE_DIR;
     if (!storageDir) return null;
 
@@ -318,18 +336,20 @@ export class SyncController {
       fs.mkdirSync(syncDir, { recursive: true });
     }
 
-    const safeName = fileName && /\.(xlsx|xls)$/i.test(fileName) ? fileName : 'selected_sync.xlsx';
+    const suffix = userEmail ? `_${userEmail}` : '';
+    const safeName = fileName && /\.(xlsx|xls)$/i.test(fileName) ? `${path.parse(fileName).name}${suffix}${path.extname(fileName)}` : `selected_sync${suffix}.xlsx`;
     const targetPath = path.join(syncDir, safeName);
     fs.writeFileSync(targetPath, buffer);
-    await this.safeSaveSetting('SYNC_FILE_PATH', targetPath);
+    await this.safeSaveSetting('SYNC_FILE_PATH', targetPath, userEmail);
     return targetPath;
   }
 
   @Post('run')
   @UseGuards(ClerkAuthGuard)
-  async runSync(@Res() res: Response) {
+  async runSync(@Res() res: Response, @Req() req?: any) {
     try {
-      const setting = await this.settingsRepo.findOneBy({ key: 'SYNC_FILE_PATH' });
+      const userEmail = req?.user?.email;
+      const setting = await this.settingsRepo.findOneBy({ key: userEmail ? `${userEmail}:SYNC_FILE_PATH` : 'SYNC_FILE_PATH' });
       const filePath = setting ? setting.value : process.env.EXCEL_FILE_PATH;
 
       if (!filePath) {
@@ -353,7 +373,7 @@ export class SyncController {
         path: filePath,
       } as any;
 
-      const result = await this.employeeService.processExcel(fakeFile);
+      const result = await this.employeeService.processExcel(fakeFile, userEmail);
       // Refresh events is handled on client; respond with result
       return res.json({ success: true, result });
     } catch (error) {
@@ -375,23 +395,28 @@ export class SyncController {
 
   @Post('onedrive/auth')
   @UseGuards(ClerkAuthGuard)
-  async saveOneDriveToken(@Body() body: { accessToken?: string; refreshToken?: string; code?: string; path?: string; folderId?: string; redirectUri?: string; clientId?: string; clientSecret?: string }, @Res() res: Response) {
+  async saveOneDriveToken(@Req() req: any, @Body() body: { accessToken?: string; refreshToken?: string; code?: string; path?: string; folderId?: string; redirectUri?: string; clientId?: string; clientSecret?: string }, @Res() res: Response) {
     try {
+      const userEmail = req.user?.email;
+      if (userEmail) {
+        await this.settingsRepo.save({ key: 'LAST_CONNECTED_USER_EMAIL', value: userEmail });
+      }
+
       // simple token save
       if (body.accessToken) {
-        await this.settingsRepo.save({ key: 'MS_GRAPH_ACCESS_TOKEN', value: body.accessToken });
+        await this.safeSaveSetting('MS_GRAPH_ACCESS_TOKEN', body.accessToken, userEmail);
       }
       if (body.refreshToken) {
-        await this.settingsRepo.save({ key: 'MS_GRAPH_REFRESH_TOKEN', value: body.refreshToken });
+        await this.safeSaveSetting('MS_GRAPH_REFRESH_TOKEN', body.refreshToken, userEmail);
       }
       if (body.path) {
-        await this.settingsRepo.save({ key: 'SYNC_ONEDRIVE_PATH', value: body.path });
+        await this.safeSaveSetting('SYNC_ONEDRIVE_PATH', body.path, userEmail);
       }
       if (body.folderId) {
-        await this.settingsRepo.save({ key: 'SYNC_ONEDRIVE_FOLDER_ID', value: body.folderId });
+        await this.safeSaveSetting('SYNC_ONEDRIVE_FOLDER_ID', body.folderId, userEmail);
       }
       if ((body as any).itemId) {
-        await this.settingsRepo.save({ key: 'SYNC_ONEDRIVE_ITEM_ID', value: (body as any).itemId });
+        await this.safeSaveSetting('SYNC_ONEDRIVE_ITEM_ID', (body as any).itemId, userEmail);
       }
 
       // If an authorization code is provided, exchange it for tokens
@@ -420,14 +445,14 @@ export class SyncController {
 
         const data = tokenResp.data;
         if (data.access_token) {
-          await this.settingsRepo.save({ key: 'MS_GRAPH_ACCESS_TOKEN', value: data.access_token });
+          await this.safeSaveSetting('MS_GRAPH_ACCESS_TOKEN', data.access_token, userEmail);
         }
         if (data.refresh_token) {
-          await this.settingsRepo.save({ key: 'MS_GRAPH_REFRESH_TOKEN', value: data.refresh_token });
+          await this.safeSaveSetting('MS_GRAPH_REFRESH_TOKEN', data.refresh_token, userEmail);
         }
         if (data.expires_in) {
           const expiresAt = (Date.now() + data.expires_in * 1000).toString();
-          await this.settingsRepo.save({ key: 'MS_GRAPH_TOKEN_EXPIRES_AT', value: expiresAt });
+          await this.safeSaveSetting('MS_GRAPH_TOKEN_EXPIRES_AT', expiresAt, userEmail);
         }
       }
 
@@ -441,7 +466,7 @@ export class SyncController {
   // Returns an authorization URL the user can visit to consent
   @Get('onedrive/start')
   @UseGuards(ClerkAuthGuard)
-  async getOneDriveAuthUrl(@Query('redirectUri') redirectUri?: string, @Res() res?: Response) {
+  async getOneDriveAuthUrl(@Req() req: any, @Query('redirectUri') redirectUri?: string, @Res() res?: Response) {
     try {
       // support multiple env names for compatibility
       const clientId = process.env.MS_GRAPH_CLIENT_ID || process.env.MS_CLIENT_ID;
@@ -456,6 +481,7 @@ export class SyncController {
         redirect_uri: redirect,
         response_mode: 'query',
         scope: 'offline_access Files.ReadWrite User.Read',
+        state: req.user?.email || '',
       });
       const url = `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/authorize?${params.toString()}`;
       return res ? res.json({ success: true, url }) : { success: true, url };
@@ -465,18 +491,18 @@ export class SyncController {
     }
   }
 
-
   // List excel files in the user's OneDrive (requires tokens)
   @Get('onedrive/list')
   @UseGuards(ClerkAuthGuard)
-  async listOneDriveFiles(@Res() res: Response) {
+  async listOneDriveFiles(@Req() req: any, @Res() res: Response) {
     try {
-      const accessToken = await this.getFreshGraphAccessToken();
+      const userEmail = req.user?.email;
+      const accessToken = await this.getFreshGraphAccessToken(userEmail);
       if (!accessToken) {
         return res.status(400).json({ success: false, message: 'No valid MS Graph access token available.' });
       }
 
-      const folderId = await this.resolveOneDriveFolderId(accessToken);
+      const folderId = await this.resolveOneDriveFolderId(accessToken, userEmail);
       if (!folderId) {
         return res.status(400).json({ success: false, message: `Could not find the "${this.hrFolderName}" folder in OneDrive.` });
       }
@@ -510,19 +536,20 @@ export class SyncController {
 
   @Post('onedrive/run')
   @UseGuards(ClerkAuthGuard)
-  async runOneDriveSync(@Res() res: Response) {
+  async runOneDriveSync(@Res() res: Response, @Req() req?: any) {
     try {
-      const accessToken = await this.getFreshGraphAccessToken();
+      const userEmail = req?.user?.email;
+      const accessToken = await this.getFreshGraphAccessToken(userEmail);
       if (!accessToken) {
         return res.status(400).json({ success: false, message: 'No valid MS Graph access token available.' });
       }
 
-      const pathSetting = await this.settingsRepo.findOneBy({ key: 'SYNC_ONEDRIVE_PATH' });
-      const folderIdSetting = await this.settingsRepo.findOneBy({ key: 'SYNC_ONEDRIVE_FOLDER_ID' });
+      const pathSetting = await this.settingsRepo.findOneBy({ key: userEmail ? `${userEmail}:SYNC_ONEDRIVE_PATH` : 'SYNC_ONEDRIVE_PATH' });
+      const folderIdSetting = await this.settingsRepo.findOneBy({ key: userEmail ? `${userEmail}:SYNC_ONEDRIVE_FOLDER_ID` : 'SYNC_ONEDRIVE_FOLDER_ID' });
       const remotePath = pathSetting ? pathSetting.value : process.env.SYNC_ONEDRIVE_PATH;
-      const itemIdSetting = await this.settingsRepo.findOneBy({ key: 'SYNC_ONEDRIVE_ITEM_ID' });
+      const itemIdSetting = await this.settingsRepo.findOneBy({ key: userEmail ? `${userEmail}:SYNC_ONEDRIVE_ITEM_ID` : 'SYNC_ONEDRIVE_ITEM_ID' });
       const remoteItemId = itemIdSetting ? itemIdSetting.value : process.env.SYNC_ONEDRIVE_ITEM_ID;
-      const remoteFolderId = folderIdSetting ? folderIdSetting.value : await this.resolveOneDriveFolderId(accessToken);
+      const remoteFolderId = folderIdSetting ? folderIdSetting.value : await this.resolveOneDriveFolderId(accessToken, userEmail);
 
       if (!remotePath && !remoteItemId && !remoteFolderId) return res.status(400).json({ success: false, message: `No OneDrive folder configured. Expected "${this.hrFolderName}".` });
 
@@ -535,7 +562,7 @@ export class SyncController {
       let excelItems = folderItems.filter((item: any) => this.isExcelFile(item?.name));
 
       if (excelItems.length === 0) {
-        const freshFolderId = await this.resolveOneDriveFolderId(accessToken, true);
+        const freshFolderId = await this.resolveOneDriveFolderId(accessToken, userEmail, true);
         if (freshFolderId && freshFolderId !== currentFolderId) {
           currentFolderId = freshFolderId;
           folderItems = await this.walkFolderTree(currentFolderId, accessToken);
@@ -557,25 +584,26 @@ export class SyncController {
 
       // Save item ID and folder ID to settings so write-back is aware of it
       if (selectedExcel?.id) {
-        await this.safeSaveSetting('SYNC_ONEDRIVE_ITEM_ID', selectedExcel.id);
+        await this.safeSaveSetting('SYNC_ONEDRIVE_ITEM_ID', selectedExcel.id, userEmail);
       }
-      if (currentFolderId) {
-        await this.safeSaveSetting('SYNC_ONEDRIVE_FOLDER_ID', currentFolderId);
+      if (remoteFolderId) {
+        await this.safeSaveSetting('SYNC_ONEDRIVE_FOLDER_ID', remoteFolderId, userEmail);
       }
 
-            // Determine local target path
+      // Determine local target path
       const storageDir = process.env.STORAGE_DIR;
       let targetPath = '';
       if (storageDir) {
         const syncDir = path.join(storageDir, 'sync');
-        const safeName = selectedExcel.name && /\.(xlsx|xls)$/i.test(selectedExcel.name) ? selectedExcel.name : 'selected_sync.xlsx';
+        const suffix = userEmail ? `_${userEmail}` : '';
+        const safeName = selectedExcel.name && /\.(xlsx|xls)$/i.test(selectedExcel.name) ? `${path.parse(selectedExcel.name).name}${suffix}${path.extname(selectedExcel.name)}` : `selected_sync${suffix}.xlsx`;
         targetPath = path.join(syncDir, safeName);
       }
 
       // Check if local file exists and is newer than the remote file on OneDrive
       let buffer = null;
       let isLocalNewer = false;
-      const localPath = await this.employeeService.resolveWorkbookPath();
+      const localPath = await this.employeeService.resolveWorkbookPath(userEmail);
 
       if (localPath && fs.existsSync(localPath)) {
         const localStat = fs.statSync(localPath);
@@ -599,12 +627,12 @@ export class SyncController {
             fs.mkdirSync(targetDir, { recursive: true });
           }
           fs.writeFileSync(targetPath, buffer);
-          await this.safeSaveSetting('SYNC_FILE_PATH', targetPath);
+          await this.safeSaveSetting('SYNC_FILE_PATH', targetPath, userEmail);
         }
       } else {
         // Just ensure targetPath is configured
         if (targetPath) {
-          await this.safeSaveSetting('SYNC_FILE_PATH', targetPath);
+          await this.safeSaveSetting('SYNC_FILE_PATH', targetPath, userEmail);
         }
       }
 
@@ -633,7 +661,7 @@ export class SyncController {
         console.error('Failed to sync template files during OneDrive sync:', err?.message || err);
       }
 
-      const result = await this.employeeService.processExcel(fakeFile);
+      const result = await this.employeeService.processExcel(fakeFile, userEmail);
 
       return res.json({ success: true, result });
     } catch (error) {
@@ -654,11 +682,12 @@ export class SyncController {
       }
     })
   }))
-  async uploadForSync(@UploadedFile() file: Express.Multer.File, @Res() res: Response) {
+  async uploadForSync(@Req() req: any, @UploadedFile() file: Express.Multer.File, @Res() res: Response) {
     try {
       if (!file) return res.status(400).json({ success: false, message: 'No file uploaded' });
+      const userEmail = req.user?.email;
       const absolutePath = path.join(process.cwd(), 'uploads', 'sync', file.filename);
-      await this.safeSaveSetting('SYNC_FILE_PATH', absolutePath);
+      await this.safeSaveSetting('SYNC_FILE_PATH', absolutePath, userEmail);
       return res.json({ success: true, path: absolutePath });
     } catch (err) {
       const e = err as any;
@@ -668,9 +697,14 @@ export class SyncController {
 
   // Callback endpoint for OAuth redirect. Microsoft will redirect the user here with ?code=...
   @Get('onedrive/callback')
-  async oneDriveCallback(@Query('code') code: string, @Res() res: Response) {
+  async oneDriveCallback(@Query('code') code: string, @Query('state') state: string, @Res() res: Response) {
     try {
       if (!code) return res.status(400).send('Missing code');
+      const userEmail = state;
+
+      if (userEmail) {
+        await this.settingsRepo.save({ key: 'LAST_CONNECTED_USER_EMAIL', value: userEmail });
+      }
 
       const clientId = process.env.MS_GRAPH_CLIENT_ID || process.env.MS_CLIENT_ID;
       const clientSecret = process.env.MS_GRAPH_CLIENT_SECRET || process.env.MS_CLIENT_SECRET;
@@ -695,11 +729,11 @@ export class SyncController {
       });
 
       const data = tokenResp.data;
-      if (data.access_token) await this.safeSaveSetting('MS_GRAPH_ACCESS_TOKEN', data.access_token);
-      if (data.refresh_token) await this.safeSaveSetting('MS_GRAPH_REFRESH_TOKEN', data.refresh_token);
+      if (data.access_token) await this.safeSaveSetting('MS_GRAPH_ACCESS_TOKEN', data.access_token, userEmail);
+      if (data.refresh_token) await this.safeSaveSetting('MS_GRAPH_REFRESH_TOKEN', data.refresh_token, userEmail);
       if (data.expires_in) {
         const expiresAt = (Date.now() + data.expires_in * 1000).toString();
-        await this.safeSaveSetting('MS_GRAPH_TOKEN_EXPIRES_AT', expiresAt);
+        await this.safeSaveSetting('MS_GRAPH_TOKEN_EXPIRES_AT', expiresAt, userEmail);
       }
 
       // Redirect back to frontend dev server with a success flag

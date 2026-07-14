@@ -17,8 +17,8 @@ export class EmployeeService {
     private settingsRepo: Repository<SystemSetting>,
   ) {}
 
-  async create(createEmployeeDto: CreateEmployeeDto) {
-    const employees = await this.readEmployeesFromWorkbook();
+  async create(createEmployeeDto: CreateEmployeeDto, userEmail?: string) {
+    const employees = await this.readEmployeesFromWorkbook(userEmail);
     const emailKey = String(createEmployeeDto.email || '').trim().toLowerCase();
     const now = new Date();
     const existingIndex = employees.findIndex(emp => String(emp.email || '').trim().toLowerCase() === emailKey);
@@ -39,22 +39,22 @@ export class EmployeeService {
       employees.push(nextEmployee);
     }
 
-    await this.saveEmployeesToWorkbook(employees);
-    await this.syncEmployeeWorkbook();
+    await this.saveEmployeesToWorkbook(employees, userEmail);
+    await this.syncEmployeeWorkbook(userEmail);
     return nextEmployee;
   }
 
-  async findAll() {
-    return this.readEmployeesFromWorkbook();
+  async findAll(userEmail?: string) {
+    return this.readEmployeesFromWorkbook(userEmail);
   }
 
-  async findOne(id: number) {
-    const employees = await this.readEmployeesFromWorkbook();
+  async findOne(id: number, userEmail?: string) {
+    const employees = await this.readEmployeesFromWorkbook(userEmail);
     return employees.find(emp => emp.id === id) || null;
   }
 
-  async update(id: number, updateEmployeeDto: UpdateEmployeeDto) {
-    const employees = await this.readEmployeesFromWorkbook();
+  async update(id: number, updateEmployeeDto: UpdateEmployeeDto, userEmail?: string) {
+    const employees = await this.readEmployeesFromWorkbook(userEmail);
     const index = employees.findIndex(emp => emp.id === id);
     if (index === -1) {
       return { affected: 0 };
@@ -80,30 +80,30 @@ export class EmployeeService {
     }
 
     employees[index] = updatedEmployee;
-    await this.saveEmployeesToWorkbook(employees);
-    await this.syncEmployeeWorkbook();
+    await this.saveEmployeesToWorkbook(employees, userEmail);
+    await this.syncEmployeeWorkbook(userEmail);
     return updatedEmployee;
   }
 
-  async remove(id: number) {
-    const employees = await this.readEmployeesFromWorkbook();
+  async remove(id: number, userEmail?: string) {
+    const employees = await this.readEmployeesFromWorkbook(userEmail);
     const nextEmployees = employees.filter(emp => emp.id !== id);
-    await this.saveEmployeesToWorkbook(nextEmployees);
-    await this.syncEmployeeWorkbook();
+    await this.saveEmployeesToWorkbook(nextEmployees, userEmail);
+    await this.syncEmployeeWorkbook(userEmail);
     return { affected: employees.length - nextEmployees.length };
   }
 
-  async removeMultiple(ids: number[]) {
+  async removeMultiple(ids: number[], userEmail?: string) {
     const idSet = new Set((ids || []).map(id => Number(id)));
-    const employees = await this.readEmployeesFromWorkbook();
+    const employees = await this.readEmployeesFromWorkbook(userEmail);
     const nextEmployees = employees.filter(emp => !idSet.has(emp.id));
-    await this.saveEmployeesToWorkbook(nextEmployees);
-    await this.syncEmployeeWorkbook();
+    await this.saveEmployeesToWorkbook(nextEmployees, userEmail);
+    await this.syncEmployeeWorkbook(userEmail);
     return { affected: employees.length - nextEmployees.length };
   }
 
-  async getTodayEvents() {
-    const employees = await this.readEmployeesFromWorkbook();
+  async getTodayEvents(userEmail?: string) {
+    const employees = await this.readEmployeesFromWorkbook(userEmail);
     const today = new Date();
     const todayMD = `${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
@@ -147,13 +147,13 @@ export class EmployeeService {
     return events;
   }
 
-  async processExcel(file: Express.Multer.File) {
+  async processExcel(file: Express.Multer.File, userEmail?: string) {
     const workbook = XLSX.read(file.buffer, { type: 'buffer' });
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
     const importedRows = XLSX.utils.sheet_to_json(sheet) as WorkbookRow[];
 
-    const existingEmployees = await this.readEmployeesFromWorkbook();
+    const existingEmployees = await this.readEmployeesFromWorkbook(userEmail);
     const emailToEmployee = new Map<string, any>();
     existingEmployees.forEach(emp => {
       const key = String(emp.email || '').trim().toLowerCase();
@@ -228,8 +228,8 @@ export class EmployeeService {
       }
     });
 
-    await this.saveEmployeesToWorkbook(mergedEmployees);
-    await this.syncEmployeeWorkbook();
+    await this.saveEmployeesToWorkbook(mergedEmployees, userEmail);
+    await this.syncEmployeeWorkbook(userEmail);
     return { added, updated, deleted, errors };
   }
 
@@ -259,12 +259,18 @@ export class EmployeeService {
     return employees.reduce((max, emp) => Math.max(max, Number(emp.id) || 0), 0) + 1;
   }
 
-  private async downloadOneDriveWorkbook(): Promise<Buffer | null> {
+  private async downloadOneDriveWorkbook(userEmail?: string): Promise<Buffer | null> {
     try {
-      const accessToken = await this.getFreshGraphAccessToken();
+      const accessToken = await this.getFreshGraphAccessToken(userEmail);
       if (!accessToken) return null;
 
-      const itemSetting = await this.settingsRepo.findOneBy({ key: 'SYNC_ONEDRIVE_ITEM_ID' });
+      let email = userEmail;
+      if (!email) {
+        const lastConnected = await this.settingsRepo.findOneBy({ key: 'LAST_CONNECTED_USER_EMAIL' });
+        email = lastConnected?.value || undefined;
+      }
+
+      const itemSetting = await this.settingsRepo.findOneBy({ key: email ? `${email}:SYNC_ONEDRIVE_ITEM_ID` : 'SYNC_ONEDRIVE_ITEM_ID' });
       const itemId = itemSetting?.value || process.env.SYNC_ONEDRIVE_ITEM_ID;
       if (!itemId) return null;
 
@@ -277,12 +283,18 @@ export class EmployeeService {
     }
   }
 
-  private async uploadOneDriveWorkbook(buffer: Buffer): Promise<boolean> {
+  private async uploadOneDriveWorkbook(buffer: Buffer, userEmail?: string): Promise<boolean> {
     try {
-      const accessToken = await this.getFreshGraphAccessToken();
+      const accessToken = await this.getFreshGraphAccessToken(userEmail);
       if (!accessToken) return false;
 
-      const itemSetting = await this.settingsRepo.findOneBy({ key: 'SYNC_ONEDRIVE_ITEM_ID' });
+      let email = userEmail;
+      if (!email) {
+        const lastConnected = await this.settingsRepo.findOneBy({ key: 'LAST_CONNECTED_USER_EMAIL' });
+        email = lastConnected?.value || undefined;
+      }
+
+      const itemSetting = await this.settingsRepo.findOneBy({ key: email ? `${email}:SYNC_ONEDRIVE_ITEM_ID` : 'SYNC_ONEDRIVE_ITEM_ID' });
       const itemId = itemSetting?.value || process.env.SYNC_ONEDRIVE_ITEM_ID;
       if (!itemId) return false;
 
@@ -303,9 +315,9 @@ export class EmployeeService {
     }
   }
 
-  private async readEmployeesFromWorkbook() {
+  private async readEmployeesFromWorkbook(userEmail?: string) {
     // 1. Try to download from OneDrive directly
-    const buffer = await this.downloadOneDriveWorkbook();
+    const buffer = await this.downloadOneDriveWorkbook(userEmail);
     if (buffer) {
       const workbook = XLSX.read(buffer, { type: 'buffer' });
       const sheetName = workbook.SheetNames[0];
@@ -319,7 +331,7 @@ export class EmployeeService {
     }
 
     // 2. Fallback to local file if OneDrive is not connected or fails
-    const workbookPath = await this.resolveWorkbookPath();
+    const workbookPath = await this.resolveWorkbookPath(userEmail);
     if (!workbookPath || !fs.existsSync(workbookPath)) {
       return [];
     }
@@ -361,9 +373,9 @@ export class EmployeeService {
     };
   }
 
-  private async saveEmployeesToWorkbook(employees: any[]) {
+  private async saveEmployeesToWorkbook(employees: any[], userEmail?: string) {
     // 1. Try to update OneDrive directly
-    const cloudBuffer = await this.downloadOneDriveWorkbook();
+    const cloudBuffer = await this.downloadOneDriveWorkbook(userEmail);
     const workbook = cloudBuffer ? XLSX.read(cloudBuffer, { type: 'buffer' }) : XLSX.utils.book_new();
     const sheetName = workbook.SheetNames[0] || 'Sheet1';
 
@@ -383,10 +395,10 @@ export class EmployeeService {
     }
 
     const buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' });
-    const uploaded = await this.uploadOneDriveWorkbook(buffer);
+    const uploaded = await this.uploadOneDriveWorkbook(buffer, userEmail);
 
     // 2. Always write to local file as a local backup cache
-    const workbookPath = await this.ensureWorkbookPath();
+    const workbookPath = await this.ensureWorkbookPath(userEmail);
     const dir = path.dirname(workbookPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -396,18 +408,19 @@ export class EmployeeService {
     return workbookPath;
   }
 
-  private async ensureWorkbookPath() {
+  private async ensureWorkbookPath(userEmail?: string) {
     const storageDir = process.env.STORAGE_DIR;
     if (!storageDir || !fs.existsSync(storageDir)) {
       throw new Error('STORAGE_DIR not found');
     }
 
-    const workbookPath = await this.resolveWorkbookPath();
+    const workbookPath = await this.resolveWorkbookPath(userEmail);
     if (workbookPath) {
       return workbookPath;
     }
 
-    const fallbackPath = path.join(storageDir, 'sync', 'selected_sync.xlsx');
+    const suffix = userEmail ? `_${userEmail}` : '';
+    const fallbackPath = path.join(storageDir, 'sync', `selected_sync${suffix}.xlsx`);
     const fallbackDir = path.dirname(fallbackPath);
     if (!fs.existsSync(fallbackDir)) {
       fs.mkdirSync(fallbackDir, { recursive: true });
@@ -480,25 +493,31 @@ export class EmployeeService {
     return dp[a.length][b.length];
   }
 
-  async syncEmployeeWorkbook() {
-    const workbookPath = await this.resolveWorkbookPath();
+  async syncEmployeeWorkbook(userEmail?: string) {
+    const workbookPath = await this.resolveWorkbookPath(userEmail);
     if (!workbookPath || !fs.existsSync(workbookPath)) {
       return { success: false, message: 'No workbook found to sync' };
     }
 
     const workbook = XLSX.readFile(workbookPath);
-    await this.pushWorkbookToOneDrive(workbook, workbookPath);
+    await this.pushWorkbookToOneDrive(workbook, workbookPath, userEmail);
     const firstSheetName = workbook.SheetNames[0];
     const rows = firstSheetName ? (XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName]) as WorkbookRow[]) : [];
     return { success: true, path: workbookPath, rows: rows.length };
   }
 
-  private async uploadProfilePhotoToOneDrive(fileName: string, buffer: Buffer, mimeType: string): Promise<boolean> {
+  private async uploadProfilePhotoToOneDrive(fileName: string, buffer: Buffer, mimeType: string, userEmail?: string): Promise<boolean> {
     try {
-      const accessToken = await this.getFreshGraphAccessToken();
+      const accessToken = await this.getFreshGraphAccessToken(userEmail);
       if (!accessToken) return false;
 
-      const folderIdSetting = await this.settingsRepo.findOneBy({ key: 'SYNC_ONEDRIVE_FOLDER_ID' });
+      let email = userEmail;
+      if (!email) {
+        const lastConnected = await this.settingsRepo.findOneBy({ key: 'LAST_CONNECTED_USER_EMAIL' });
+        email = lastConnected?.value || undefined;
+      }
+
+      const folderIdSetting = await this.settingsRepo.findOneBy({ key: email ? `${email}:SYNC_ONEDRIVE_FOLDER_ID` : 'SYNC_ONEDRIVE_FOLDER_ID' });
       const folderId = folderIdSetting?.value || process.env.SYNC_ONEDRIVE_FOLDER_ID;
       if (!folderId) return false;
 
@@ -516,13 +535,13 @@ export class EmployeeService {
     }
   }
 
-  async saveEmployeeProfilePhoto(employeeId: number, file: Express.Multer.File) {
+  async saveEmployeeProfilePhoto(employeeId: number, file: Express.Multer.File, userEmail?: string) {
     const storageDir = process.env.STORAGE_DIR;
     if (!storageDir) {
       throw new Error('STORAGE_DIR not defined');
     }
 
-    const employees = await this.readEmployeesFromWorkbook();
+    const employees = await this.readEmployeesFromWorkbook(userEmail);
     const employee = employees.find(emp => emp.id === employeeId);
     if (!employee) {
       throw new Error(`Employee not found: ${employeeId}`);
@@ -543,7 +562,7 @@ export class EmployeeService {
     }
 
     // 1. Upload directly to OneDrive profiles folder
-    await this.uploadProfilePhotoToOneDrive(fileName, buffer, file.mimetype);
+    await this.uploadProfilePhotoToOneDrive(fileName, buffer, file.mimetype, userEmail);
 
     // 2. Save locally as backup cache
     const profilesDir = path.join(storageDir, 'profiles');
@@ -555,23 +574,24 @@ export class EmployeeService {
 
     employee.photoUrl = path.join('profiles', fileName);
     employee.updatedAt = new Date();
-    await this.saveEmployeesToWorkbook(employees);
-    await this.syncEmployeeWorkbook();
+    await this.saveEmployeesToWorkbook(employees, userEmail);
+    await this.syncEmployeeWorkbook(userEmail);
     return { success: true, photoUrl: employee.photoUrl };
   }
 
-  async resolveWorkbookPath() {
+  async resolveWorkbookPath(userEmail?: string) {
     const storageDir = process.env.STORAGE_DIR;
     if (!storageDir || !fs.existsSync(storageDir)) {
       return null;
     }
 
+    const suffix = userEmail ? `_${userEmail}` : '';
     const resolveIfWorkbook = (candidate?: string | null) => {
       if (!candidate || !fs.existsSync(candidate)) return null;
       const stat = fs.statSync(candidate);
       if (stat.isFile()) return candidate;
       if (stat.isDirectory()) {
-        const preferred = path.join(candidate, 'selected_sync.xlsx');
+        const preferred = path.join(candidate, `selected_sync${suffix}.xlsx`);
         if (fs.existsSync(preferred)) return preferred;
         const files = fs.readdirSync(candidate).filter(f => /\.(xlsx|xls)$/i.test(f));
         if (files.length > 0) return path.join(candidate, files[0]);
@@ -579,7 +599,12 @@ export class EmployeeService {
       return null;
     };
     try {
-      const setting = await this.settingsRepo.findOneBy({ key: 'SYNC_FILE_PATH' });
+      let email = userEmail;
+      if (!email) {
+        const lastConnected = await this.settingsRepo.findOneBy({ key: 'LAST_CONNECTED_USER_EMAIL' });
+        email = lastConnected?.value || undefined;
+      }
+      const setting = await this.settingsRepo.findOneBy({ key: email ? `${email}:SYNC_FILE_PATH` : 'SYNC_FILE_PATH' });
       const settingPath = resolveIfWorkbook(setting?.value || null);
       if (settingPath) {
         return settingPath;
@@ -595,7 +620,7 @@ export class EmployeeService {
 
     const syncDir = path.join(storageDir, 'sync');
     if (fs.existsSync(syncDir)) {
-      const syncFile = fs.readdirSync(syncDir).find(f => /\.(xlsx|xls)$/i.test(f));
+      const syncFile = fs.readdirSync(syncDir).find(f => f.includes(suffix) && /\.(xlsx|xls)$/i.test(f));
       if (syncFile) {
         return path.join(syncDir, syncFile);
       }
@@ -641,9 +666,15 @@ export class EmployeeService {
     return null;
   }
 
-  private async pushWorkbookToOneDrive(workbook: XLSX.WorkBook, excelPath: string) {
+  private async pushWorkbookToOneDrive(workbook: XLSX.WorkBook, excelPath: string, userEmail?: string) {
     try {
-      const itemSetting = await this.settingsRepo.findOneBy({ key: 'SYNC_ONEDRIVE_ITEM_ID' });
+      let email = userEmail;
+      if (!email) {
+        const lastConnected = await this.settingsRepo.findOneBy({ key: 'LAST_CONNECTED_USER_EMAIL' });
+        email = lastConnected?.value || undefined;
+      }
+
+      const itemSetting = await this.settingsRepo.findOneBy({ key: email ? `${email}:SYNC_ONEDRIVE_ITEM_ID` : 'SYNC_ONEDRIVE_ITEM_ID' });
       const itemId = itemSetting?.value || process.env.SYNC_ONEDRIVE_ITEM_ID;
 
       if (!itemId) {
@@ -651,7 +682,7 @@ export class EmployeeService {
       }
 
       const buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' }) as Buffer;
-      const accessToken = await this.getFreshGraphAccessToken();
+      const accessToken = await this.getFreshGraphAccessToken(userEmail);
       if (!accessToken) {
         return;
       }
@@ -670,10 +701,16 @@ export class EmployeeService {
     }
   }
 
-  private async getFreshGraphAccessToken(): Promise<string | null> {
-    const tokenSetting = await this.settingsRepo.findOneBy({ key: 'MS_GRAPH_ACCESS_TOKEN' });
-    const refreshSetting = await this.settingsRepo.findOneBy({ key: 'MS_GRAPH_REFRESH_TOKEN' });
-    const expiresSetting = await this.settingsRepo.findOneBy({ key: 'MS_GRAPH_TOKEN_EXPIRES_AT' });
+  private async getFreshGraphAccessToken(userEmail?: string): Promise<string | null> {
+    let email = userEmail;
+    if (!email) {
+      const lastConnected = await this.settingsRepo.findOneBy({ key: 'LAST_CONNECTED_USER_EMAIL' });
+      email = lastConnected?.value || undefined;
+    }
+
+    const tokenSetting = await this.settingsRepo.findOneBy({ key: email ? `${email}:MS_GRAPH_ACCESS_TOKEN` : 'MS_GRAPH_ACCESS_TOKEN' });
+    const refreshSetting = await this.settingsRepo.findOneBy({ key: email ? `${email}:MS_GRAPH_REFRESH_TOKEN` : 'MS_GRAPH_REFRESH_TOKEN' });
+    const expiresSetting = await this.settingsRepo.findOneBy({ key: email ? `${email}:MS_GRAPH_TOKEN_EXPIRES_AT` : 'MS_GRAPH_TOKEN_EXPIRES_AT' });
 
     let accessToken = tokenSetting?.value || process.env.MS_GRAPH_ACCESS_TOKEN || '';
     const refreshToken = refreshSetting?.value || process.env.MS_GRAPH_REFRESH_TOKEN || '';
@@ -711,13 +748,13 @@ export class EmployeeService {
       const data = tokenResp.data;
       if (data.access_token) {
         accessToken = data.access_token;
-        await this.settingsRepo.save({ key: 'MS_GRAPH_ACCESS_TOKEN', value: data.access_token });
+        await this.settingsRepo.save({ key: email ? `${email}:MS_GRAPH_ACCESS_TOKEN` : 'MS_GRAPH_ACCESS_TOKEN', value: data.access_token });
       }
       if (data.refresh_token) {
-        await this.settingsRepo.save({ key: 'MS_GRAPH_REFRESH_TOKEN', value: data.refresh_token });
+        await this.settingsRepo.save({ key: email ? `${email}:MS_GRAPH_REFRESH_TOKEN` : 'MS_GRAPH_REFRESH_TOKEN', value: data.refresh_token });
       }
       if (data.expires_in) {
-        await this.settingsRepo.save({ key: 'MS_GRAPH_TOKEN_EXPIRES_AT', value: String(Date.now() + data.expires_in * 1000) });
+        await this.settingsRepo.save({ key: email ? `${email}:MS_GRAPH_TOKEN_EXPIRES_AT` : 'MS_GRAPH_TOKEN_EXPIRES_AT', value: String(Date.now() + data.expires_in * 1000) });
       }
       return accessToken || null;
     } catch (err) {

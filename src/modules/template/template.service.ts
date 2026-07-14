@@ -243,9 +243,9 @@ export class TemplateService {
 
     return {
       subject: 'Happy Birthday {NAME}!',
-      htmlContent: '<p>Wishing you a year filled with joy, laughter, and wonderful memories. Thank you for being such a valuable part of our team!</p>',
-      greetingTemplate: 'Happy Birthday',
-      imageConfig: { coordinateMode: 'template', shape: 'circle', x: 355, y: 262, width: 530, height: 530, borderInset: 6 },
+      htmlContent: '<p>Wishing you a fantastic day filled with joy and celebration! Happy Birthday!</p>',
+      greetingTemplate: this.birthdayGreetingTemplate,
+      imageConfig: { coordinateMode: 'template', shape: 'circle', x: 91, y: 126, width: 142, height: 142, borderColor: '#FF7A00', borderWidth: 6 },
       nameConfig: {
         coordinateMode: 'template',
         x: 620,

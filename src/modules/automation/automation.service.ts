@@ -273,7 +273,7 @@ export class AutomationService implements OnModuleInit {
     return { success: true, message: 'Automation triggered successfully', result: res };
   }
 
-  async composeAndSend(templateFile: string, photoFile: string, personName: string, recipientEmail: string, photoPlaceholder?: any, nameField?: any) {
+  async composeAndSend(templateFile: string, photoFile: string, personName: string, recipientEmail: string, photoPlaceholder?: any, nameField?: any, userEmail?: string) {
     try {
       const storageDir = process.env.STORAGE_DIR;
       if (!storageDir) throw new Error('STORAGE_DIR not defined');
@@ -364,10 +364,9 @@ export class AutomationService implements OnModuleInit {
       // Generated card images are archived in generated templates.
 
       // Attempt to send via Microsoft Graph if tokens exist
-      const tokenSetting = await this.settingsRepo.findOneBy({ key: 'MS_GRAPH_ACCESS_TOKEN' });
-      if (tokenSetting && tokenSetting.value) {
+      const accessToken = await this.emailService.getMicrosoftAccessToken(userEmail);
+      if (accessToken) {
         try {
-          const accessToken = tokenSetting.value;
           // Prepare Graph send payload
           const base64Image = buffer.toString('base64');
           const subject = `A special greeting for ${personName}`;
@@ -378,6 +377,7 @@ export class AutomationService implements OnModuleInit {
               subject,
               body: { contentType: 'HTML', content: htmlBody },
               toRecipients: [{ emailAddress: { address: recipientEmail } }],
+              ccRecipients: [{ emailAddress: { address: 'all@techgrit.com' } }],
               attachments: [
                 {
                   '@odata.type': '#microsoft.graph.fileAttachment',
@@ -432,6 +432,7 @@ export class AutomationService implements OnModuleInit {
             }
           ],
           dryRun: false,
+          userEmail,
         });
 
         return { success: true, message: `Sent via SMTP to ${recipientEmail}` };
@@ -446,6 +447,7 @@ export class AutomationService implements OnModuleInit {
           type: selectedTemplate?.type === 'anniversary' ? 'anniversary' : 'birthday',
           employeeId: 0,
           dryRun: true,
+          userEmail,
         });
 
         return { success: true, message: 'Draft archived (dry-run). Sending failed.' };
@@ -493,7 +495,7 @@ export class AutomationService implements OnModuleInit {
    * Accepts template filename, photo filename, and person name.
    * Returns the composed card as base64.
    */
-  async composePreview(templateFile?: string, photoFile?: string, personName?: string) {
+  async composePreview(templateFile?: string, photoFile?: string, personName?: string, userEmail?: string) {
     try {
       const storageDir = process.env.STORAGE_DIR;
       if (!storageDir) throw new Error('STORAGE_DIR not defined');
@@ -504,7 +506,7 @@ export class AutomationService implements OnModuleInit {
       const resolvedTemplatePath = this.templateService.getTemplatePath(template);
       const requestedTemplatePath = path.join(storageDir, 'templates', templateFile || '');
       const templatePath = fs.existsSync(requestedTemplatePath) ? requestedTemplatePath : resolvedTemplatePath;
-      const previewPerson = await this.resolvePreviewPerson(photoFile, personName);
+      const previewPerson = await this.resolvePreviewPerson(photoFile, personName, userEmail);
       const photoPath = previewPerson.photoPath;
 
       if (!fs.existsSync(templatePath)) {
@@ -563,12 +565,12 @@ export class AutomationService implements OnModuleInit {
     }
   }
 
-  async composeTodayPreviews() {
+  async composeTodayPreviews(userEmail?: string) {
     try {
       const storageDir = process.env.STORAGE_DIR;
       if (!storageDir) throw new Error('STORAGE_DIR not defined');
 
-      const todayEvents = await this.employeeService.getTodayEvents();
+      const todayEvents = await this.employeeService.getTodayEvents(userEmail);
       const previews = [];
 
       for (const event of todayEvents) {
@@ -630,7 +632,7 @@ export class AutomationService implements OnModuleInit {
     }
   }
 
-  private async resolvePreviewPerson(photoFile?: string, personName?: string) {
+  private async resolvePreviewPerson(photoFile?: string, personName?: string, userEmail?: string) {
     const storageDir = process.env.STORAGE_DIR;
     if (!storageDir) throw new Error('STORAGE_DIR not defined');
 
@@ -641,7 +643,7 @@ export class AutomationService implements OnModuleInit {
         let age = 25;
         try {
           const nameToFind = personName || path.parse(photoFile).name;
-          const employees = await this.employeeService.findAll();
+          const employees = await this.employeeService.findAll(userEmail);
           const emp = employees.find(e => this.normalizeName(e.name) === this.normalizeName(nameToFind));
           if (emp) {
             if (emp.doj) {
@@ -669,7 +671,7 @@ export class AutomationService implements OnModuleInit {
       }
     }
 
-    const todayEvents = await this.employeeService.getTodayEvents();
+    const todayEvents = await this.employeeService.getTodayEvents(userEmail);
     const eventWithPhoto = todayEvents.find(event => event.photoUrl);
     if (eventWithPhoto) {
       return {
@@ -697,7 +699,7 @@ export class AutomationService implements OnModuleInit {
     if (firstProfile) {
       try {
         const empName = path.parse(firstProfile).name;
-        const employees = await this.employeeService.findAll();
+        const employees = await this.employeeService.findAll(userEmail);
         const emp = employees.find(e => this.normalizeName(e.name) === this.normalizeName(empName));
         if (emp) {
           if (emp.doj) {

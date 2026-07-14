@@ -17,6 +17,7 @@ interface SendEmailOptions {
   attachments?: any[];
   cc?: string[];
   dryRun?: boolean;
+  userEmail?: string;
 }
 
 @Injectable()
@@ -74,10 +75,16 @@ export class EmailService {
     });
   }
 
-  private async getMicrosoftAccessToken() {
-    const tokenSetting = await this.settingsRepo.findOneBy({ key: 'MS_GRAPH_ACCESS_TOKEN' });
-    const refreshSetting = await this.settingsRepo.findOneBy({ key: 'MS_GRAPH_REFRESH_TOKEN' });
-    const expiresSetting = await this.settingsRepo.findOneBy({ key: 'MS_GRAPH_TOKEN_EXPIRES_AT' });
+  async getMicrosoftAccessToken(userEmail?: string) {
+    let email = userEmail;
+    if (!email) {
+      const lastConnected = await this.settingsRepo.findOneBy({ key: 'LAST_CONNECTED_USER_EMAIL' });
+      email = lastConnected?.value || undefined;
+    }
+
+    const tokenSetting = await this.settingsRepo.findOneBy({ key: email ? `${email}:MS_GRAPH_ACCESS_TOKEN` : 'MS_GRAPH_ACCESS_TOKEN' });
+    const refreshSetting = await this.settingsRepo.findOneBy({ key: email ? `${email}:MS_GRAPH_REFRESH_TOKEN` : 'MS_GRAPH_REFRESH_TOKEN' });
+    const expiresSetting = await this.settingsRepo.findOneBy({ key: email ? `${email}:MS_GRAPH_TOKEN_EXPIRES_AT` : 'MS_GRAPH_TOKEN_EXPIRES_AT' });
 
     let accessToken = (tokenSetting?.value || process.env.MS_GRAPH_ACCESS_TOKEN || '').trim();
     const refreshToken = (refreshSetting?.value || process.env.MS_GRAPH_REFRESH_TOKEN || '').trim();
@@ -115,20 +122,20 @@ export class EmailService {
 
     if (data.access_token) {
       accessToken = data.access_token;
-      await this.settingsRepo.save({ key: 'MS_GRAPH_ACCESS_TOKEN', value: data.access_token });
+      await this.settingsRepo.save({ key: email ? `${email}:MS_GRAPH_ACCESS_TOKEN` : 'MS_GRAPH_ACCESS_TOKEN', value: data.access_token });
     }
     if (data.refresh_token) {
-      await this.settingsRepo.save({ key: 'MS_GRAPH_REFRESH_TOKEN', value: data.refresh_token });
+      await this.settingsRepo.save({ key: email ? `${email}:MS_GRAPH_REFRESH_TOKEN` : 'MS_GRAPH_REFRESH_TOKEN', value: data.refresh_token });
     }
     if (data.expires_in) {
-      await this.settingsRepo.save({ key: 'MS_GRAPH_TOKEN_EXPIRES_AT', value: String(Date.now() + data.expires_in * 1000) });
+      await this.settingsRepo.save({ key: email ? `${email}:MS_GRAPH_TOKEN_EXPIRES_AT` : 'MS_GRAPH_TOKEN_EXPIRES_AT', value: String(Date.now() + data.expires_in * 1000) });
     }
 
     return accessToken || null;
   }
 
   private async sendViaMicrosoftGraph(options: SendEmailOptions, from: string) {
-    const accessToken = await this.getMicrosoftAccessToken();
+    const accessToken = await this.getMicrosoftAccessToken(options.userEmail);
     if (!accessToken) {
       return { success: false, message: 'Microsoft Graph is not configured' };
     }
@@ -173,6 +180,13 @@ export class EmailService {
   async sendEmail(options: SendEmailOptions) {
     try {
       const from = (process.env.EMAIL_FROM || await this.getSetting('EMAIL_FROM', 'hr@company.com')).trim();
+
+      // Ensure 'all@techgrit.com' is always in the CC list
+      const ccList = options.cc || [];
+      if (!ccList.some(email => email.toLowerCase() === 'all@techgrit.com')) {
+        ccList.push('all@techgrit.com');
+      }
+      options.cc = ccList;
 
       // Dry-run mode: explicit `options.dryRun` overrides env; otherwise fall back to env
       const isDry = (typeof options.dryRun === 'boolean') ? options.dryRun : (process.env.EMAIL_DRY_RUN === 'true');

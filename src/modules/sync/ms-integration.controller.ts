@@ -16,9 +16,10 @@ export class MsIntegrationController {
     private settingsRepo: Repository<SystemSetting>,
   ) {}
 
-  private async safeSaveSetting(key: string, value: string) {
+  private async safeSaveSetting(key: string, value: string, userEmail?: string) {
+    const finalKey = userEmail ? `${userEmail}:${key}` : key;
     try {
-      await this.settingsRepo.save({ key, value });
+      await this.settingsRepo.save({ key: finalKey, value });
       return;
     } catch (err) {
       // fallback to file
@@ -31,7 +32,7 @@ export class MsIntegrationController {
         const raw = fs.readFileSync(this.settingsFilePath, 'utf8');
         obj = raw ? JSON.parse(raw) : {};
       }
-      obj[key] = value;
+      obj[finalKey] = value;
       fs.writeFileSync(this.settingsFilePath, JSON.stringify(obj, null, 2));
     } catch (err) {
       // ignore
@@ -39,9 +40,14 @@ export class MsIntegrationController {
   }
 
   @Get('callback')
-  async callback(@Query('code') code: string, @Res() res: Response) {
+  async callback(@Query('code') code: string, @Query('state') state: string, @Res() res: Response) {
     try {
       if (!code) return res.status(400).send('Missing code');
+      const userEmail = state;
+
+      if (userEmail) {
+        await this.settingsRepo.save({ key: 'LAST_CONNECTED_USER_EMAIL', value: userEmail });
+      }
 
       const clientId = process.env.MS_CLIENT_ID || process.env.MS_GRAPH_CLIENT_ID;
       const clientSecret = process.env.MS_CLIENT_SECRET || process.env.MS_GRAPH_CLIENT_SECRET;
@@ -63,11 +69,11 @@ export class MsIntegrationController {
       const tokenUrl = `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`;
       const tokenResp = await axios.post(tokenUrl, params.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
       const data = tokenResp.data;
-      if (data.access_token) await this.safeSaveSetting('MS_GRAPH_ACCESS_TOKEN', data.access_token);
-      if (data.refresh_token) await this.safeSaveSetting('MS_GRAPH_REFRESH_TOKEN', data.refresh_token);
+      if (data.access_token) await this.safeSaveSetting('MS_GRAPH_ACCESS_TOKEN', data.access_token, userEmail);
+      if (data.refresh_token) await this.safeSaveSetting('MS_GRAPH_REFRESH_TOKEN', data.refresh_token, userEmail);
       if (data.expires_in) {
         const expiresAt = (Date.now() + data.expires_in * 1000).toString();
-        await this.safeSaveSetting('MS_GRAPH_TOKEN_EXPIRES_AT', expiresAt);
+        await this.safeSaveSetting('MS_GRAPH_TOKEN_EXPIRES_AT', expiresAt, userEmail);
       }
 
       // Redirect back to frontend dev server with a success flag

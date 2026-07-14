@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, UseGuards, Req } from '@nestjs/common';
 import { AutomationService } from './automation.service';
 import { ClerkAuthGuard } from '../../common/guards/clerk-auth.guard';
 
@@ -24,24 +24,30 @@ export class AutomationController {
   }
 
   @Post('compose-send')
-  async composeAndSend(@Body() body: { templateFile: string; photoFile: string; personName: string; recipientEmail: string; photoPlaceholder?: any; nameField?: any }) {
+  async composeAndSend(
+    @Body() body: { templateFile: string; photoFile: string; personName: string; recipientEmail: string; photoPlaceholder?: any; nameField?: any },
+    @Req() req: any
+  ) {
     const { templateFile, photoFile, personName, recipientEmail, photoPlaceholder, nameField } = body || {};
     if (!templateFile || !photoFile || !personName || !recipientEmail) {
       return { success: false, message: 'Missing required fields: templateFile, photoFile, personName, recipientEmail' };
     }
 
-    return this.automationService.composeAndSend(templateFile, photoFile, personName, recipientEmail, photoPlaceholder, nameField);
+    const userEmail = req.user?.email;
+    return this.automationService.composeAndSend(templateFile, photoFile, personName, recipientEmail, photoPlaceholder, nameField, userEmail);
   }
 
   @Post('preview')
-  async previewCard(@Body() body: { templateFile?: string; photoFile?: string; personName?: string } = {}) {
+  async previewCard(@Body() body: { templateFile?: string; photoFile?: string; personName?: string } = {}, @Req() req: any) {
     const { templateFile, photoFile, personName } = body || {};
-    return this.automationService.composePreview(templateFile, photoFile, personName);
+    const userEmail = req.user?.email;
+    return this.automationService.composePreview(templateFile, photoFile, personName, userEmail);
   }
 
   @Post('previews')
-  async previewCards() {
-    return this.automationService.composeTodayPreviews();
+  async previewCards(@Req() req: any) {
+    const userEmail = req.user?.email;
+    return this.automationService.composeTodayPreviews(userEmail);
   }
 
   @Get('preview-last')
