@@ -25,7 +25,7 @@ type FileTemplate = {
 @Injectable()
 export class TemplateService {
   private readonly supportedExtensions = /\.(png|jpe?g|webp|gif|bmp)$/i;
-  private readonly birthdayGreetingTemplate = 'Happy {AGE}{ORDINAL} Birthday!';
+  private readonly birthdayGreetingTemplate = 'Happy Birthday';
   private readonly anniversaryGreetingTemplate = 'Happy Work Anniversary';
 
   findAll() {
