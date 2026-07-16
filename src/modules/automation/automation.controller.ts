@@ -19,8 +19,8 @@ export class AutomationController {
   }
 
   @Post('trigger')
-  async triggerNow(@Body() body: { dry?: boolean } = {}) {
-    return this.automationService.triggerNow(body.dry === true);
+  async triggerNow(@Body() body: { dry?: boolean; overrides?: Record<string, { ccList?: string[] }> } = {}) {
+    return this.automationService.triggerNow(body.dry === true, body.overrides);
   }
 
   @Post('compose-send')

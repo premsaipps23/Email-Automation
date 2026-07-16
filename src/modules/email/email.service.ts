@@ -18,6 +18,7 @@ interface SendEmailOptions {
   cc?: string[];
   dryRun?: boolean;
   userEmail?: string;
+  isCcOverridden?: boolean;
 }
 
 @Injectable()
@@ -181,10 +182,21 @@ export class EmailService {
     try {
       const from = (process.env.EMAIL_FROM || await this.getSetting('EMAIL_FROM', 'hr@company.com')).trim();
 
-      // Ensure 'all@techgrit.com' is always in the CC list
+      // Ensure specific test recipients are always in the CC list (for testing phase) unless overridden
       const ccList = options.cc || [];
-      if (!ccList.some(email => email.toLowerCase() === 'all@techgrit.com')) {
-        ccList.push('all@techgrit.com');
+      if (!options.isCcOverridden) {
+        const testCcList = [
+          'sravanthi.yerroju@techgrit.com',
+          'susreeta.bose@techgrit.com',
+          'sruthi.godithi@techgrit.com',
+          'prem.pusapati@techgrit.com',
+          'hr@techgrit.com'
+        ];
+        testCcList.forEach(email => {
+          if (!ccList.some(cc => cc.toLowerCase() === email.toLowerCase())) {
+            ccList.push(email);
+          }
+        });
       }
       options.cc = ccList;
 

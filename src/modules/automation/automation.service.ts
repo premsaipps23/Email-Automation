@@ -86,7 +86,7 @@ export class AutomationService implements OnModuleInit {
     return this.handleDailyEmailAutomationInternal(false);
   }
 
-  private async handleDailyEmailAutomationInternal(dryRun: boolean) {
+  private async handleDailyEmailAutomationInternal(dryRun: boolean, overrides?: Record<string, { ccList?: string[] }>) {
     const summary = {
       total: 0,
       sent: 0,
@@ -113,7 +113,8 @@ export class AutomationService implements OnModuleInit {
       this.logger.log(`Found ${todayEvents.length} events for today`);
 
       for (const event of todayEvents) {
-        const result = await this.processEvent(event, dryRun);
+        const eventOverrides = overrides?.[event.employeeId];
+        const result = await this.processEvent(event, dryRun, eventOverrides?.ccList);
         summary.details.push(result);
         if (result?.status === 'sent') summary.sent++;
         else if (result?.status === 'skipped') summary.skipped++;
@@ -128,7 +129,7 @@ export class AutomationService implements OnModuleInit {
     return { success: true, message: `Processed ${summary.total} events`, ...summary };
   }
 
-  private async processEvent(event: any, dryRun = false) {
+  private async processEvent(event: any, dryRun = false, overrideCcList?: string[]) {
     try {
       if (!event.name || !event.name.trim()) {
         this.logger.warn(`Skipping event for employee ${event.employeeId}: missing name`);
@@ -232,16 +233,23 @@ export class AutomationService implements OnModuleInit {
       }
 
       // Get broadcast email(s) if configured; include as CC
-      const broadcastEmail = await this.settingsRepo.findOneBy({ key: 'BROADCAST_EMAIL' });
-      const recipients = [event.email];
       let ccList: string[] = [];
-      if (broadcastEmail?.value) {
-        ccList = broadcastEmail.value.split(',').map(s => s.trim()).filter(Boolean).filter(a => a !== event.email);
+      let isCcOverridden = false;
+      if (overrideCcList) {
+        ccList = overrideCcList;
+        isCcOverridden = true;
+      } else {
+        const broadcastEmail = await this.settingsRepo.findOneBy({ key: 'BROADCAST_EMAIL' });
+        if (broadcastEmail?.value) {
+          ccList = broadcastEmail.value.split(',').map(s => s.trim()).filter(Boolean).filter(a => a !== event.email);
+        }
       }
+      const recipients = [event.email];
 
       await this.emailService.sendEmail({
         to: recipients.join(', '),
         cc: ccList.length > 0 ? ccList : undefined,
+        isCcOverridden,
         subject,
         htmlContent: finalHtmlContent,
         type: event.type,
@@ -267,9 +275,9 @@ export class AutomationService implements OnModuleInit {
     return { enabled: this.automationEnabled };
   }
 
-  async triggerNow(dry = false) {
+  async triggerNow(dry = false, overrides?: Record<string, { ccList?: string[] }>) {
     this.logger.log('Manual trigger started');
-    const res = await this.handleDailyEmailAutomationInternal(dry);
+    const res = await this.handleDailyEmailAutomationInternal(dry, overrides);
     return { success: true, message: 'Automation triggered successfully', result: res };
   }
 
@@ -377,7 +385,13 @@ export class AutomationService implements OnModuleInit {
               subject,
               body: { contentType: 'HTML', content: htmlBody },
               toRecipients: [{ emailAddress: { address: recipientEmail } }],
-              ccRecipients: [{ emailAddress: { address: 'all@techgrit.com' } }],
+              ccRecipients: [
+                { emailAddress: { address: 'sravanthi.yerroju@techgrit.com' } },
+                { emailAddress: { address: 'susreeta.bose@techgrit.com' } },
+                { emailAddress: { address: 'sruthi.godithi@techgrit.com' } },
+                { emailAddress: { address: 'prem.pusapati@techgrit.com' } },
+                { emailAddress: { address: 'hr@techgrit.com' } }
+              ],
               attachments: [
                 {
                   '@odata.type': '#microsoft.graph.fileAttachment',
@@ -612,12 +626,42 @@ export class AutomationService implements OnModuleInit {
           bodyMessage
         );
 
+        const variables: Record<string, string> = {
+          NAME: event.name,
+        };
+        if (event.type === 'birthday') {
+          variables['AGE'] = event.age?.toString() || '';
+        } else if (event.type === 'anniversary') {
+          variables['YEARS'] = event.years?.toString() || '';
+        }
+        const subject = template.subject.replace(/{(\w+)}/g, (_, key) => variables[key] || '');
+
+        const broadcastEmail = await this.settingsRepo.findOneBy({ key: 'BROADCAST_EMAIL' });
+        let ccList: string[] = [];
+        if (broadcastEmail?.value) {
+          ccList = broadcastEmail.value.split(',').map(s => s.trim()).filter(Boolean).filter(a => a !== event.email);
+        }
+        const testCcList = [
+          'sravanthi.yerroju@techgrit.com',
+          'susreeta.bose@techgrit.com',
+          'sruthi.godithi@techgrit.com',
+          'prem.pusapati@techgrit.com',
+          'hr@techgrit.com'
+        ];
+        testCcList.forEach(email => {
+          if (!ccList.some(cc => cc.toLowerCase() === email.toLowerCase())) {
+            ccList.push(email);
+          }
+        });
+
         previews.push({
           success: true,
           event,
           templateFile: (template as any)?.fileName || path.basename(templatePath),
           photoFile: event.photoUrl || '',
           contentBase64: buffer.toString('base64'),
+          subject,
+          ccList,
         });
       }
 
